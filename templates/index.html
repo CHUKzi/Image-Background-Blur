@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Upload an Image</title>
+    <style>
+        /* Add spacing between items */
+        form {
+            margin-top: 20px; /* Adjust the value as needed */
+        }
+        label, input[type="file"], input[type="range"], input[type="submit"] {
+            margin-bottom: 10px; /* Adjust the value as needed */
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <h1>Upload an Image</h1>
+    <form method="POST" enctype="multipart/form-data">
+        <input type="file" name="file">
+        <label for="blur-slider">Blur Intensity:</label>
+        <input type="range" id="blur-slider" name="blur-radius" min="0" max="40" value="10" step="1">
+        <input type="submit" value="Upload and Process">
+    </form>
+    {% if error %}
+        <p>{{ error }}</p>
+    {% endif %}
+</body>
+</html>

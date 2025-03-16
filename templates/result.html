@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Result</title>
+    <style>
+        /* Style to set maximum width for the image */
+        img {
+            max-width: 60%; /* Set maximum width to 100% of container */
+            height: 30; /* Maintain aspect ratio */
+        }
+    </style>
+</head>
+<body>
+    <h1>Result</h1>
+    <img src="{{ url_for('serve_processed_image', filename=basename(result_image_path)) }}" alt="Processed Image">
+    <br>
+    <a href="{{ url_for('download_processed_image', filename=basename(result_image_path)) }}" download>
+        <button>Download Processed Image</button>
+    </a>
+</body>
+</html>
