@@ -14,6 +14,14 @@ app = Flask(__name__)
 API_KEY = os.getenv('API_KEY', '').strip()
 ORIGINAL_DIR = 'original'
 MASKED_DIR = 'masked'
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+ALLOWED_MIME_TYPES = {
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/bmp',
+    'image/tiff',
+}
 
 # Set up directories
 os.makedirs(ORIGINAL_DIR, exist_ok=True)
@@ -41,7 +49,42 @@ def _verify_api_key():
 
     return None
 
-def process_image(file, blur_radius=10):
+def _get_request_file():
+    if 'file' not in request.files:
+        return None, (jsonify({'error': 'No file part in request'}), 400)
+
+    file = request.files['file']
+    if not file or file.filename == '':
+        return None, (jsonify({'error': 'No selected file'}), 400)
+
+    if file.mimetype not in ALLOWED_MIME_TYPES:
+        return None, (jsonify({'error': 'Unsupported file type'}), 415)
+
+    return file, None
+
+def _read_input_data(file):
+    input_data = file.read()
+    if not input_data:
+        return None, (jsonify({'error': 'Uploaded file is empty'}), 400)
+
+    if len(input_data) > MAX_UPLOAD_BYTES:
+        return None, (jsonify({'error': 'File too large. Max size is 15MB'}), 413)
+
+    return input_data, None
+
+def _remove_background_rgba(input_data):
+    # Tuned defaults improve edge quality on hair/object boundaries.
+    removed = remove(
+        input_data,
+        alpha_matting=True,
+        alpha_matting_foreground_threshold=240,
+        alpha_matting_background_threshold=10,
+        alpha_matting_erode_size=8,
+        post_process_mask=True,
+    )
+    return Image.open(BytesIO(removed)).convert('RGBA')
+
+def process_image(file, input_data, blur_radius=10):
     # Generate a unique sanitized filename to avoid collisions.
     sanitized_filename = sanitize_filename(file.filename)
     filename_root, extension = os.path.splitext(sanitized_filename)
@@ -49,14 +92,13 @@ def process_image(file, blur_radius=10):
     original_filename = f"{filename_root}_{unique_suffix}{extension or '.png'}"
     output_filename = f"{filename_root}_{unique_suffix}_blurred.jpg"
 
-    # Save the uploaded image inside the "original" folder with the sanitized filename
-    input_data = file.read()
+    # Save the uploaded image inside the "original" folder with the sanitized filename.
     original_image_path = os.path.join(ORIGINAL_DIR, original_filename)
     with open(original_image_path, 'wb') as original_file:
         original_file.write(input_data)
 
-    # Remove the background from the uploaded image
-    foreground_img = Image.open(BytesIO(remove(input_data, alpha_matting=True))).convert('RGBA')
+    # Remove the background from the uploaded image.
+    foreground_img = _remove_background_rgba(input_data)
 
     # Save the foreground image in the "masked" folder with the sanitized filename
     foreground_path = os.path.join(MASKED_DIR, f"{filename_root}_{unique_suffix}_foreground.png")
@@ -81,6 +123,32 @@ def process_image(file, blur_radius=10):
 
     return image_buffer, output_filename
 
+def process_remove_background(file, input_data):
+    # Generate a unique sanitized filename to avoid collisions.
+    sanitized_filename = sanitize_filename(file.filename)
+    filename_root, extension = os.path.splitext(sanitized_filename)
+    unique_suffix = uuid.uuid4().hex[:8]
+    original_filename = f"{filename_root}_{unique_suffix}{extension or '.png'}"
+    output_filename = f"{filename_root}_{unique_suffix}_removed.png"
+
+    # Save the uploaded image to the original folder.
+    original_image_path = os.path.join(ORIGINAL_DIR, original_filename)
+    with open(original_image_path, 'wb') as original_file:
+        original_file.write(input_data)
+
+    # Remove background and keep transparent alpha output.
+    foreground_img = _remove_background_rgba(input_data)
+
+    # Save processed image to disk and return memory buffer for API response.
+    output_path = os.path.join(MASKED_DIR, output_filename)
+    foreground_img.save(output_path, format='PNG')
+
+    image_buffer = BytesIO()
+    foreground_img.save(image_buffer, format='PNG')
+    image_buffer.seek(0)
+
+    return image_buffer, output_filename
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'ok'})
@@ -91,17 +159,18 @@ def blur_background_api():
     if auth_error:
         return auth_error
 
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file part in request'}), 400
+    file, file_error = _get_request_file()
+    if file_error:
+        return file_error
 
-    file = request.files['file']
-    if not file or file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+    input_data, input_error = _read_input_data(file)
+    if input_error:
+        return input_error
 
     blur_radius = _parse_blur_radius(request.form.get('blur-radius', 10))
 
     try:
-        image_buffer, output_filename = process_image(file, blur_radius)
+        image_buffer, output_filename = process_image(file, input_data, blur_radius)
     except Exception as exc:
         return jsonify({'error': f'Image processing failed: {str(exc)}'}), 500
 
@@ -112,11 +181,37 @@ def blur_background_api():
         download_name=output_filename,
     )
 
+@app.route('/api/remove-background', methods=['POST'])
+def remove_background_api():
+    auth_error = _verify_api_key()
+    if auth_error:
+        return auth_error
+
+    file, file_error = _get_request_file()
+    if file_error:
+        return file_error
+
+    input_data, input_error = _read_input_data(file)
+    if input_error:
+        return input_error
+
+    try:
+        image_buffer, output_filename = process_remove_background(file, input_data)
+    except Exception as exc:
+        return jsonify({'error': f'Image processing failed: {str(exc)}'}), 500
+
+    return send_file(
+        image_buffer,
+        mimetype='image/png',
+        as_attachment=False,
+        download_name=output_filename,
+    )
+
 @app.route('/', methods=['GET'])
 def root_route():
     return jsonify({
         'service': 'background-blur-api',
-        'endpoint': '/api/blur-background',
+        'endpoints': ['/api/blur-background', '/api/remove-background'],
         'method': 'POST',
         'auth_header': 'x-api-key',
         'form_fields': ['file', 'blur-radius (optional, 0-100)']
