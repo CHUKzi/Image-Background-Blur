@@ -1,3 +1,4 @@
 /.vscode
 /masked/
 /original/
+.env
